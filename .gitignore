@@ -1,0 +1,32 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Build output
+bin/
+obj/
+
+# Rider
+.idea/
+
+# Logs
+*.log
+
+# NuGet
+packages/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# BepInEx runtime files
+BepInEx/
+doorstop_libs/
+unstripped_corlib/
+
+# Thunderstore packaging
+*.zip
+
+# Generated config
+*.cfg
