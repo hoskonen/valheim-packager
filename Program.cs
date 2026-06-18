@@ -43,12 +43,19 @@ internal static class Program
 
     private static int RunValidate(string[] args)
     {
-        string packageDir = GetPackageDir(args);
+        string rootDir = Directory.GetCurrentDirectory();
+        ValheimPackagerConfig config = ReadProjectConfig(rootDir);
+
+        string packageDir = GetPackageDir(args, config, rootDir);
 
         Console.WriteLine("ValheimPackager - Validate");
         Console.WriteLine();
 
-        ValidationReport report = ValidatePackageFolder(packageDir, dllPath: null, requireDll: false);
+        ValidationReport report = ValidatePackageFolder(
+            packageDir,
+            dllPath: null,
+            requireDll: false
+        );
 
         report.Print();
 
@@ -172,21 +179,73 @@ internal static class Program
             "  \"packageDir\": \"Thunderstore\",\n" +
             "  \"outputDir\": \"dist\",\n" +
             $"  \"dllName\": \"{dllName}\",\n" +
-            "  \"pluginFolderName\": \"\"\n" +
+            "  \"pluginFolderName\": \"\",\n" +
+            "  \"dllSource\": \"\"\n" +
             "}\n";
+    }
+
+    private static ValheimPackagerConfig ReadProjectConfig(string rootDir)
+    {
+        string configPath = Path.Combine(rootDir, ProjectConfigFileName);
+
+        if (!File.Exists(configPath))
+        {
+            return new ValheimPackagerConfig();
+        }
+
+        string json = File.ReadAllText(configPath);
+
+        ValheimPackagerConfig? config = JsonSerializer.Deserialize<ValheimPackagerConfig>(
+            json,
+            new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            }
+        );
+
+        return config ?? new ValheimPackagerConfig();
+    }
+
+    private static string ResolvePathFromRoot(string rootDir, string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return rootDir;
+        }
+
+        if (Path.IsPathRooted(path))
+        {
+            return path;
+        }
+
+        return Path.Combine(rootDir, path);
     }
 
     private static int RunPackage(string[] args)
     {
-        string packageDir = GetPackageDir(args);
+        string rootDir = Directory.GetCurrentDirectory();
+        ValheimPackagerConfig config = ReadProjectConfig(rootDir);
+
+        string packageDir = GetPackageDir(args, config, rootDir);
+
         string? dllPath = GetOptionValue(args, "--dll");
+
+        if (string.IsNullOrWhiteSpace(dllPath))
+        {
+            dllPath = ResolveConfiguredDllSource(config, rootDir);
+        }
+
         string outputDir = GetOptionValue(args, "--out")
-                   ?? Path.Combine(Directory.GetCurrentDirectory(), DefaultOutputDirName);
+                           ?? ResolvePathFromRoot(rootDir, config.OutputDir);
 
         Console.WriteLine("ValheimPackager - Package");
         Console.WriteLine();
 
-        ValidationReport preReport = ValidatePackageFolder(packageDir, dllPath, requireDll: true);
+        ValidationReport preReport = ValidatePackageFolder(
+            packageDir,
+            dllPath,
+            requireDll: true
+        );
 
         if (preReport.HasErrors)
         {
@@ -196,7 +255,7 @@ internal static class Program
 
         ThunderstoreManifest manifest = ReadManifest(Path.Combine(packageDir, ManifestFileName));
 
-        string packageName = $"{manifest.Name}-{manifest.VersionNumber}";
+        string packageName = $"{manifest.Name}-v{manifest.VersionNumber}";
         string releaseDir = Path.Combine(outputDir, packageName);
         string zipPath = Path.Combine(outputDir, $"{packageName}.zip");
 
@@ -258,13 +317,44 @@ internal static class Program
             includeBaseDirectory: false
         );
 
-        ValidationReport finalReport = ValidatePackageFolder(releaseDir, dllPath: null);
+        ValidationReport finalReport = ValidatePackageFolder(
+            releaseDir,
+            dllPath: null,
+            requireDll: true
+        );
         finalReport.AddInfo($"Created release folder: {releaseDir}");
         finalReport.AddInfo($"Created zip: {zipPath}");
 
         finalReport.Print();
 
         return finalReport.HasErrors ? 1 : 0;
+    }
+
+    private static string? ResolveConfiguredDllSource(ValheimPackagerConfig config, string rootDir)
+    {
+        if (!string.IsNullOrWhiteSpace(config.DllSource))
+        {
+            return ResolvePathFromRoot(rootDir, config.DllSource);
+        }
+
+        // For now, pluginFolderName cannot resolve fully until we add global config.
+        // Later:
+        // global.bepInExPluginsDir + pluginFolderName + dllName
+
+        if (!string.IsNullOrWhiteSpace(config.DllName))
+        {
+            string packageDllPath = Path.Combine(
+                ResolvePathFromRoot(rootDir, config.PackageDir),
+                config.DllName
+            );
+
+            if (File.Exists(packageDllPath))
+            {
+                return packageDllPath;
+            }
+        }
+
+        return null;
     }
 
     private static ValidationReport ValidatePackageFolder(string packageDir, string? dllPath, bool requireDll = false)
@@ -337,6 +427,13 @@ internal static class Program
                 else
                 {
                     report.AddWarning("No DLL found in package folder. This is okay if you use --dll during package creation.");
+                }
+            }
+            else
+            {
+                foreach (string dll in dlls)
+                {
+                    report.AddOk($"DLL found: {Path.GetFileName(dll)}");
                 }
             }
         }
@@ -626,27 +723,26 @@ internal static class Program
         );
     }
 
-    private static string GetPackageDir(string[] args)
+    private static string GetPackageDir(string[] args, ValheimPackagerConfig config, string rootDir)
     {
         if (args.Length >= 2 && !args[1].StartsWith("--"))
         {
             return args[1];
         }
 
-        string currentDir = Directory.GetCurrentDirectory();
-        string thunderstoreDir = Path.Combine(currentDir, DefaultPackageDirName);
+        string configuredPackageDir = ResolvePathFromRoot(rootDir, config.PackageDir);
 
-        if (Directory.Exists(thunderstoreDir))
+        if (Directory.Exists(configuredPackageDir))
         {
-            return thunderstoreDir;
+            return configuredPackageDir;
         }
 
-        if (File.Exists(Path.Combine(currentDir, ManifestFileName)))
+        if (File.Exists(Path.Combine(rootDir, ManifestFileName)))
         {
-            return currentDir;
+            return rootDir;
         }
 
-        return thunderstoreDir;
+        return configuredPackageDir;
     }
 
     private static string? GetOptionValue(string[] args, string optionName)
@@ -681,12 +777,26 @@ internal static class Program
         Console.WriteLine("ValheimPackager");
         Console.WriteLine();
         Console.WriteLine("Commands:");
+        Console.WriteLine("  init [options]");
         Console.WriteLine("  validate [packageDir]");
-        Console.WriteLine("  package  [packageDir] --dll <dllPath> --out <outputDir>");
+        Console.WriteLine("  package [packageDir] [--dll <dllPathOrFolder>] [--out <outputDir>]");
+        Console.WriteLine();
+        Console.WriteLine("Default workflow from a mod repo:");
+        Console.WriteLine("  valheim-packager init");
+        Console.WriteLine("  valheim-packager validate");
+        Console.WriteLine("  valheim-packager package");
+        Console.WriteLine();
+        Console.WriteLine("Init options:");
+        Console.WriteLine("  --name <modName>");
+        Console.WriteLine("  --version <x.y.z>");
+        Console.WriteLine("  --url <websiteUrl>");
+        Console.WriteLine("  --description <description>");
+        Console.WriteLine("  --dll-name <dllName>");
         Console.WriteLine();
         Console.WriteLine("Examples:");
-        Console.WriteLine(@"  dotnet run -- validate ""C:\Mods\RhythmicRepairs\Thunderstore""");
-        Console.WriteLine(@"  dotnet run -- package ""C:\Mods\RhythmicRepairs\Thunderstore"" --dll ""C:\Mods\RhythmicRepairs\RhythmicRepairs.dll"" --out ""C:\Mods\RhythmicRepairs\dist""");
+        Console.WriteLine(@"  dotnet run -- init --name TakeAllCooked --version 1.1.0 --url https://github.com/hoskonen/valheim-takeallcooked");
+        Console.WriteLine(@"  dotnet run -- validate");
+        Console.WriteLine(@"  dotnet run -- package --dll ""C:\Path\To\BepInEx\plugins\petri-TakeAllCooked""");
     }
 
     private static int Fail(string message)
@@ -795,7 +905,6 @@ internal sealed class ValidationReport
 }
 
 internal sealed record ReportLine(ReportLevel Level, string Message);
-
 
 internal enum ReportLevel
 {
