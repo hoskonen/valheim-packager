@@ -62,6 +62,34 @@ internal static class Program
         return report.HasErrors ? 1 : 0;
     }
 
+    private static string GetGlobalConfigPath()
+    {
+        string appDataDir = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        return Path.Combine(appDataDir, "ValheimPackager", "config.json");
+    }
+
+    private static GlobalConfig ReadGlobalConfig()
+    {
+        string configPath = GetGlobalConfigPath();
+
+        if (!File.Exists(configPath))
+        {
+            return new GlobalConfig();
+        }
+
+        string json = File.ReadAllText(configPath);
+
+        GlobalConfig? config = JsonSerializer.Deserialize<GlobalConfig>(
+            json,
+            new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            }
+        );
+
+        return config ?? new GlobalConfig();
+    }
+
     private static int RunInit(string[] args)
     {
         string rootDir = Directory.GetCurrentDirectory();
@@ -78,6 +106,7 @@ internal static class Program
         string websiteUrl = GetOptionValue(args, "--url") ?? "https://github.com/YOUR_USERNAME/YOUR_REPOSITORY";
         string description = GetOptionValue(args, "--description") ?? "TODO: Add a short mod description.";
         string dllName = GetOptionValue(args, "--dll-name") ?? $"{modName}.dll";
+        string pluginFolderName = GetOptionValue(args, "--plugin-folder") ?? $"petri-{modName}";
 
         WriteFileIfMissing(
             Path.Combine(packageDir, ManifestFileName),
@@ -96,7 +125,7 @@ internal static class Program
 
         WriteFileIfMissing(
             projectConfigPath,
-            CreateProjectConfigTemplate(dllName)
+            CreateProjectConfigTemplate(dllName, pluginFolderName)
         );
 
         Console.WriteLine("Next steps:");
@@ -172,14 +201,14 @@ internal static class Program
             "- TODO: Add release note.\n";
     }
 
-    private static string CreateProjectConfigTemplate(string dllName)
+    private static string CreateProjectConfigTemplate(string dllName, string pluginFolderName)
     {
         return
             "{\n" +
             "  \"packageDir\": \"Thunderstore\",\n" +
             "  \"outputDir\": \"dist\",\n" +
             $"  \"dllName\": \"{dllName}\",\n" +
-            "  \"pluginFolderName\": \"\",\n" +
+            $"  \"pluginFolderName\": \"{pluginFolderName}\",\n" +
             "  \"dllSource\": \"\"\n" +
             "}\n";
     }
@@ -224,19 +253,21 @@ internal static class Program
     private static int RunPackage(string[] args)
     {
         string rootDir = Directory.GetCurrentDirectory();
-        ValheimPackagerConfig config = ReadProjectConfig(rootDir);
 
-        string packageDir = GetPackageDir(args, config, rootDir);
+        ValheimPackagerConfig projectConfig = ReadProjectConfig(rootDir);
+        GlobalConfig globalConfig = ReadGlobalConfig();
+
+        string packageDir = GetPackageDir(args, projectConfig, rootDir);
 
         string? dllPath = GetOptionValue(args, "--dll");
 
         if (string.IsNullOrWhiteSpace(dllPath))
         {
-            dllPath = ResolveConfiguredDllSource(config, rootDir);
+            dllPath = ResolveConfiguredDllSource(projectConfig, globalConfig, rootDir);
         }
 
         string outputDir = GetOptionValue(args, "--out")
-                           ?? ResolvePathFromRoot(rootDir, config.OutputDir);
+                           ?? ResolvePathFromRoot(rootDir, projectConfig.OutputDir);
 
         Console.WriteLine("ValheimPackager - Package");
         Console.WriteLine();
@@ -330,22 +361,33 @@ internal static class Program
         return finalReport.HasErrors ? 1 : 0;
     }
 
-    private static string? ResolveConfiguredDllSource(ValheimPackagerConfig config, string rootDir)
+    private static string? ResolveConfiguredDllSource(
+    ValheimPackagerConfig projectConfig,
+    GlobalConfig globalConfig,
+    string rootDir
+)
     {
-        if (!string.IsNullOrWhiteSpace(config.DllSource))
+        if (!string.IsNullOrWhiteSpace(projectConfig.DllSource))
         {
-            return ResolvePathFromRoot(rootDir, config.DllSource);
+            return ResolvePathFromRoot(rootDir, projectConfig.DllSource);
         }
 
-        // For now, pluginFolderName cannot resolve fully until we add global config.
-        // Later:
-        // global.bepInExPluginsDir + pluginFolderName + dllName
+        if (!string.IsNullOrWhiteSpace(globalConfig.BepInExPluginsDir) &&
+            !string.IsNullOrWhiteSpace(projectConfig.PluginFolderName) &&
+            !string.IsNullOrWhiteSpace(projectConfig.DllName))
+        {
+            return Path.Combine(
+                globalConfig.BepInExPluginsDir,
+                projectConfig.PluginFolderName,
+                projectConfig.DllName
+            );
+        }
 
-        if (!string.IsNullOrWhiteSpace(config.DllName))
+        if (!string.IsNullOrWhiteSpace(projectConfig.DllName))
         {
             string packageDllPath = Path.Combine(
-                ResolvePathFromRoot(rootDir, config.PackageDir),
-                config.DllName
+                ResolvePathFromRoot(rootDir, projectConfig.PackageDir),
+                projectConfig.DllName
             );
 
             if (File.Exists(packageDllPath))
